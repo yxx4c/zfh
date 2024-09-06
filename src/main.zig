@@ -11,21 +11,27 @@ pub fn main() !void {
     var buffer = std.io.bufferedWriter(writer);
     const out = buffer.writer();
 
-    const os_logo = logo.arch;
+    const uname = std.posix.uname();
+    const arch = uname.machine;
+    const kernel = uname.release;
+    const nodename: []const u8 = try getNonNullPaddedString(try std.fmt.allocPrint(allocator, "{s}", .{uname.nodename}));
+
+    const os_logo = try logo.getLogo(nodename);
     const x_axis = os_logo.width + 4;
     const y_axis = os_logo.height + 1;
 
-    const username = try getUserName();
-    const shell = try getShell();
-    const hostname = try getHostname(allocator);
+    var hbuff: [128:0]u8 = undefined;
+    const hostname = try std.posix.gethostname(&hbuff);
+    const user = std.c.getpwuid(std.os.linux.geteuid()).?;
+    const username = std.mem.span(user.pw_name.?);
+    const shell = getFinalFileNameFromPath(std.mem.span(user.pw_shell.?));
+
     const os = try getOs(allocator);
-    const arch = try getArch(allocator);
     const pkgs = try getPackagesCount();
     const uptime = try getUptime(allocator);
     const memory = try getMemory(allocator);
     const mem_total = try getReadableDataUnit(memory.total * 1024, allocator);
     const mem_used = try getReadableDataUnit(memory.used * 1024, allocator);
-    const kernel = try getKernel(allocator);
 
     try printArt(os_logo.art, y_axis, out);
 
@@ -38,50 +44,25 @@ pub fn main() !void {
     try printInfo(allocator, "{s}memory{s}   {s}/{s}\n", .{ color.BLUE, color.RESET, mem_used, mem_total }, x_axis, out);
     try printInfo(allocator, "{s}kernel{s}   {s}\n", .{ color.BLUE, color.RESET, kernel }, x_axis, out);
 
-    try printColorPallet(x_axis, out);
+    try printColorPallete(x_axis, out);
 
     try buffer.flush();
 }
 
-fn getUserName() ![]const u8 {
-    const user = std.c.getpwuid(std.os.linux.geteuid()).?;
-
-    const username = std.mem.span(user.pw_name.?);
-
-    return username;
-}
-
-fn getHostname(allocator: std.mem.Allocator) ![]const u8 {
-    const hostname = try getFileContent("/proc/sys/kernel/hostname", allocator, true);
-
-    return hostname;
-}
-
 fn getOs(allocator: std.mem.Allocator) ![]const u8 {
-    const os = try getFileContent("/proc/sys/kernel/ostype", allocator, true);
+    const os_release = try getFileContent("/etc/os-release", allocator, true);
+
+    var os: []const u8 = "Linux";
+    var infos = std.mem.splitSequence(u8, os_release, "\n");
+
+    while (infos.next()) |info| {
+        if (std.mem.startsWith(u8, info, "NAME")) {
+            os = info[6 .. info.len - 1];
+            break;
+        }
+    }
 
     return os;
-}
-
-fn getArch(allocator: std.mem.Allocator) ![]const u8 {
-    const arch = try getFileContent("/proc/sys/kernel/arch", allocator, true);
-
-    return arch;
-}
-
-fn getShell() ![]const u8 {
-    const user = std.c.getpwuid(std.os.linux.geteuid()).?;
-
-    const shell_path = std.mem.span(user.pw_shell.?);
-    const shell = getFinalFileNameFromPath(shell_path);
-
-    return shell;
-}
-
-fn getKernel(allocator: std.mem.Allocator) ![]const u8 {
-    const kernel = try getFileContent("/proc/sys/kernel/osrelease", allocator, true);
-
-    return kernel;
 }
 
 fn getPackagesCount() !usize {
@@ -148,7 +129,7 @@ fn printInfo(allocator: std.mem.Allocator, comptime format: []const u8, args: an
     try out.print("\x1b[{d}C{s}", .{ x_axis, content });
 }
 
-fn printColorPallet(x_axis: usize, out: anytype) !void {
+fn printColorPallete(x_axis: usize, out: anytype) !void {
     const glyph = "\u{2726}";
 
     try out.print("\x1b[{d}C", .{x_axis});
@@ -252,4 +233,11 @@ fn getReadableDataUnit(size: u64, allocator: std.mem.Allocator) ![]const u8 {
     const readableDataUnit = try std.fmt.allocPrint(allocator, "{d}{s}", .{ @floor(value), suffixes[index] });
 
     return readableDataUnit;
+}
+
+fn getNonNullPaddedString(padded_string: []const u8) ![]const u8 {
+    const length = std.mem.indexOf(u8, padded_string, "\x00") orelse padded_string.len;
+    const trimmed_string = padded_string[0..length];
+
+    return trimmed_string;
 }
